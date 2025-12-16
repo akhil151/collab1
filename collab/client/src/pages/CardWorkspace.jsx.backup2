@@ -1,0 +1,1294 @@
+import { useState, useEffect, useRef, useCallback } from "react"
+import { useParams, useNavigate } from "react-router-dom"
+import { useUserStore } from "../store/userStore"
+import { 
+  ArrowLeft, Type, Shapes, ImageIcon, Link2, Trash2, Save, 
+  Bold, Italic, Underline, Upload
+} from "lucide-react"
+import axios from "axios"
+import io from "socket.io-client"
+
+// Debounce utility
+const debounce = (func, wait) => {
+  let timeout
+  return (...args) => {
+    clearTimeout(timeout)
+    timeout = setTimeout(() => func(...args), wait)
+  }
+}
+
+export default function CardWorkspace() {
+  const { boardId, listId, cardId } = useParams()
+  const { user } = useUserStore()
+  const navigate = useNavigate()
+  const canvasRef = useRef(null)
+  const fileInputRef = useRef(null)
+
+  const [card, setCard] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [socket, setSocket] = useState(null)
+  const [activeTool, setActiveTool] = useState(null)
+  
+  // Canvas elements
+  const [elements, setElements] = useState([])
+  const [selectedElement, setSelectedElement] = useState(null)
+  const [isDragging, setIsDragging] = useState(false)
+  const [isResizing, setIsResizing] = useState(false)
+  const [resizeHandle, setResizeHandle] = useState(null)
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
+  const [elementStart, setElementStart] = useState({ x: 0, y: 0, width: 0, height: 0 })
+  
+  // Text tool
+  const [editingTextId, setEditingTextId] = useState(null)
+  
+  // Shape tool
+  const [selectedShape, setSelectedShape] = useState("rectangle")
+  
+  // Image tool
+  const [imageUrl, setImageUrl] = useState("")
+  
+  // Connector tool
+  const [connectorMode, setConnectorMode] = useState(false)
+  const [connectorStart, setConnectorStart] = useState(null)
+  const [tempConnectorEnd, setTempConnectorEnd] = useState(null)
+  const [connectors, setConnectors] = useState([])
+  const [selectedConnectorStyle, setSelectedConnectorStyle] = useState({
+    type: "straight",
+    color: "#8b5cf6",
+    width: 2
+  })
+
+  // Canvas bounds
+  const CANVAS_WIDTH = 1600
+  const CANVAS_HEIGHT = 1200
+  const MIN_ELEMENT_SIZE = 50
+
+  useEffect(() => {
+    if (!user) {
+      navigate("/login")
+      return
+    }
+
+    fetchCard()
+    setupSocket()
+
+    return () => socket?.close()
+  }, [cardId, user])
+
+  const setupSocket = () => {
+    const socketUrl = import.meta.env.VITE_SOCKET_URL || "http://localhost:5000"
+    const newSocket = io(socketUrl, {
+      reconnection: true,
+      reconnectionDelay: 1000,
+      reconnectionAttempts: 5,
+      transports: ["websocket", "polling"],
+    })
+
+    newSocket.on("connect", () => {
+      newSocket.emit("join-card", cardId)
+    })
+
+    newSocket.on("workspace:update", (data) => {
+      if (data.elements) setElements(data.elements)
+      if (data.connectors) setConnectors(data.connectors)
+    })
+
+    newSocket.on("element:added", (element) => {
+      setElements((prev) => [...prev.filter(el => el.id !== element.id), element])
+    })
+
+    newSocket.on("element:updated", (updatedElement) => {
+      setElements((prev) => prev.map((el) => (el.id === updatedElement.id ? updatedElement : el)))
+    })
+
+    newSocket.on("element:deleted", ({ elementId }) => {
+      setElements((prev) => prev.filter((el) => el.id !== elementId))
+    })
+
+    newSocket.on("connector:added", (connector) => {
+      setConnectors((prev) => [...prev.filter(c => c.id !== connector.id), connector])
+    })
+
+    newSocket.on("connector:deleted", ({ connectorId }) => {
+      setConnectors((prev) => prev.filter((c) => c.id !== connectorId))
+    })
+
+    setSocket(newSocket)
+  }
+
+  const fetchCard = async () => {
+    try {
+      const token = localStorage.getItem("token")
+      const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/cards/${cardId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      setCard(response.data)
+      
+      if (response.data.elements) setElements(response.data.elements)
+      if (response.data.connectors) setConnectors(response.data.connectors)
+      
+      setLoading(false)
+    } catch (error) {
+      console.error("Failed to fetch card:", error)
+      setLoading(false)
+    }
+  }
+
+  // Debounced autosave
+  const debouncedSave = useCallback(
+    debounce(async (elementsToSave, connectorsToSave) => {
+      try {
+        const token = localStorage.getItem("token")
+        await axios.put(
+          `${import.meta.env.VITE_API_URL}/api/cards/${cardId}`,
+          { elements: elementsToSave, connectors: connectorsToSave },
+          { headers: { Authorization: `Bearer ${token}` } }
+        )
+      } catch (error) {
+        console.error("Autosave failed:", error)
+      }
+    }, 2000),
+    [cardId]
+  )
+
+  useEffect(() => {
+    if (elements.length > 0 || connectors.length > 0) {
+      debouncedSave(elements, connectors)
+    }
+  }, [elements, connectors, debouncedSave])
+
+  const saveWorkspace = async () => {
+    try {
+      const token = localStorage.getItem("token")
+      await axios.put(
+        `${import.meta.env.VITE_API_URL}/api/cards/${cardId}`,
+        { elements, connectors },
+        { headers: { Authorization: `Bearer ${token}` } }
+      )
+      
+      if (socket) {
+        socket.emit("workspace:save", { cardId, elements, connectors })
+      }
+      
+      alert("Workspace saved successfully!")
+    } catch (error) {
+      console.error("Failed to save workspace:", error)
+      alert("Failed to save workspace")
+    }
+  }
+
+  // ===== UTILITY FUNCTIONS =====
+  
+  const constrainToBounds = (x, y, width, height) => {
+    const constrainedX = Math.max(0, Math.min(x, CANVAS_WIDTH - width))
+    const constrainedY = Math.max(0, Math.min(y, CANVAS_HEIGHT - height))
+    return { x: constrainedX, y: constrainedY }
+  }
+
+  const getResizeHandle = (element, mouseX, mouseY) => {
+    if (!element.size) return null
+    
+    const { position, size } = element
+    const handleSize = 10
+    
+    const handles = {
+      'nw': { x: position.x, y: position.y },
+      'ne': { x: position.x + size.width, y: position.y },
+      'sw': { x: position.x, y: position.y + size.height },
+      'se': { x: position.x + size.width, y: position.y + size.height },
+      'n': { x: position.x + size.width / 2, y: position.y },
+      's': { x: position.x + size.width / 2, y: position.y + size.height },
+      'e': { x: position.x + size.width, y: position.y + size.height / 2 },
+      'w': { x: position.x, y: position.y + size.height / 2 },
+    }
+
+    for (const [handle, pos] of Object.entries(handles)) {
+      if (Math.abs(mouseX - pos.x) < handleSize && Math.abs(mouseY - pos.y) < handleSize) {
+        return handle
+      }
+    }
+    
+    return null
+  }
+
+  const handleResize = (element, handle, deltaX, deltaY) => {
+    let newPos = { ...element.position }
+    let newSize = { ...element.size }
+
+    switch (handle) {
+      case 'se':
+        newSize.width = Math.max(MIN_ELEMENT_SIZE, element.size.width + deltaX)
+        newSize.height = Math.max(MIN_ELEMENT_SIZE, element.size.height + deltaY)
+        break
+      case 'sw':
+        newSize.width = Math.max(MIN_ELEMENT_SIZE, element.size.width - deltaX)
+        newSize.height = Math.max(MIN_ELEMENT_SIZE, element.size.height + deltaY)
+        newPos.x = element.position.x + (element.size.width - newSize.width)
+        break
+      case 'ne':
+        newSize.width = Math.max(MIN_ELEMENT_SIZE, element.size.width + deltaX)
+        newSize.height = Math.max(MIN_ELEMENT_SIZE, element.size.height - deltaY)
+        newPos.y = element.position.y + (element.size.height - newSize.height)
+        break
+      case 'nw':
+        newSize.width = Math.max(MIN_ELEMENT_SIZE, element.size.width - deltaX)
+        newSize.height = Math.max(MIN_ELEMENT_SIZE, element.size.height - deltaY)
+        newPos.x = element.position.x + (element.size.width - newSize.width)
+        newPos.y = element.position.y + (element.size.height - newSize.height)
+        break
+      case 'n':
+        newSize.height = Math.max(MIN_ELEMENT_SIZE, element.size.height - deltaY)
+        newPos.y = element.position.y + (element.size.height - newSize.height)
+        break
+      case 's':
+        newSize.height = Math.max(MIN_ELEMENT_SIZE, element.size.height + deltaY)
+        break
+      case 'e':
+        newSize.width = Math.max(MIN_ELEMENT_SIZE, element.size.width + deltaX)
+        break
+      case 'w':
+        newSize.width = Math.max(MIN_ELEMENT_SIZE, element.size.width - deltaX)
+        newPos.x = element.position.x + (element.size.width - newSize.width)
+        break
+    }
+
+    // Constrain to canvas bounds
+    const constrained = constrainToBounds(newPos.x, newPos.y, newSize.width, newSize.height)
+    
+    return {
+      position: constrained,
+      size: newSize
+    }
+  }
+
+  // ===== SHAPE FUNCTIONS =====
+  
+  const handleAddShape = () => {
+    const newElement = {
+      id: `shape-${Date.now()}`,
+      type: "shape",
+      shape: selectedShape,
+      position: { x: 300, y: 200 },
+      size: { width: 200, height: 150 },
+      strokeColor: "#8b5cf6",
+      strokeWidth: 3,
+      fill: "rgba(139, 92, 246, 0.1)",
+      text: "",
+      rotation: 0,
+    }
+
+    setElements([...elements, newElement])
+    if (socket) socket.emit("element:add", { cardId, element: newElement })
+    setActiveTool(null)
+  }
+
+  // ===== TEXT FUNCTIONS =====
+  
+  const handleAddText = (x = 200, y = 200) => {
+    const newElement = {
+      id: `text-${Date.now()}`,
+      type: "text",
+      content: "Double-click to edit",
+      position: { x, y },
+      size: { width: 200, height: 50 },
+      fontSize: 16,
+      color: "#ffffff",
+      bold: false,
+      italic: false,
+      underline: false,
+    }
+
+    setElements([...elements, newElement])
+    if (socket) socket.emit("element:add", { cardId, element: newElement })
+    setActiveTool(null)
+  }
+
+  const updateTextElement = (elementId, updates) => {
+    const updatedElements = elements.map((el) =>
+      el.id === elementId ? { ...el, ...updates } : el
+    )
+    setElements(updatedElements)
+    
+    const updatedElement = updatedElements.find(el => el.id === elementId)
+    if (socket && updatedElement) {
+      socket.emit("element:update", { cardId, element: updatedElement })
+    }
+  }
+
+  const handleTextFormatChange = (format) => {
+    if (!selectedElement || selectedElement.type !== "text") return
+    
+    const newValue = !selectedElement[format]
+    updateTextElement(selectedElement.id, { [format]: newValue })
+    setSelectedElement({ ...selectedElement, [format]: newValue })
+  }
+
+  const handleFontSizeChange = (delta) => {
+    if (!selectedElement || selectedElement.type !== "text") return
+    
+    const newSize = Math.max(8, Math.min(72, selectedElement.fontSize + delta))
+    updateTextElement(selectedElement.id, { fontSize: newSize })
+    setSelectedElement({ ...selectedElement, fontSize: newSize })
+  }
+
+  // ===== IMAGE FUNCTIONS =====
+  
+  const handleAddImage = () => {
+    if (!imageUrl.trim()) return
+
+    const newElement = {
+      id: `image-${Date.now()}`,
+      type: "image",
+      url: imageUrl,
+      position: { x: 200, y: 200 },
+      size: { width: 300, height: 300 },
+    }
+
+    setElements([...elements, newElement])
+    if (socket) socket.emit("element:add", { cardId, element: newElement })
+    
+    setImageUrl("")
+    setActiveTool(null)
+  }
+
+  const handleImageUpload = (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+
+    const reader = new FileReader()
+    reader.onload = (event) => {
+      const imageData = event.target.result
+      
+      // Store in localStorage
+      const storageKey = `uploaded-image-${Date.now()}`
+      localStorage.setItem(storageKey, imageData)
+
+      const newElement = {
+        id: `image-${Date.now()}`,
+        type: "image",
+        url: imageData,
+        storageKey,
+        position: { x: 200, y: 200 },
+        size: { width: 300, height: 300 },
+      }
+
+      setElements([...elements, newElement])
+      if (socket) socket.emit("element:add", { cardId, element: newElement })
+      
+      setActiveTool(null)
+    }
+    reader.readAsDataURL(file)
+  }
+
+  // ===== CONNECTOR FUNCTIONS =====
+  
+  const getAnchorPoints = (element) => {
+    if (!element.position || !element.size) return []
+    
+    const { x, y } = element.position
+    const { width, height } = element.size
+    
+    return [
+      { id: 'top', x: x + width / 2, y: y, position: 'top' },
+      { id: 'right', x: x + width, y: y + height / 2, position: 'right' },
+      { id: 'bottom', x: x + width / 2, y: y + height, position: 'bottom' },
+      { id: 'left', x: x, y: y + height / 2, position: 'left' },
+    ]
+  }
+
+  const handleConnectorClick = (element) => {
+    if (!connectorMode) return
+
+    if (!connectorStart) {
+      setConnectorStart({ elementId: element.id, element })
+    } else if (connectorStart.elementId !== element.id) {
+      const newConnector = {
+        id: `connector-${Date.now()}`,
+        from: connectorStart.elementId,
+        to: element.id,
+        type: selectedConnectorStyle.type,
+        color: selectedConnectorStyle.color,
+        width: selectedConnectorStyle.width,
+      }
+      
+      setConnectors([...connectors, newConnector])
+      if (socket) socket.emit("connector:add", { cardId, connector: newConnector })
+      
+      setConnectorStart(null)
+      setConnectorMode(false)
+      setActiveTool(null)
+    }
+  }
+
+  const getConnectorPath = (connector) => {
+    const fromEl = elements.find(el => el.id === connector.from)
+    const toEl = elements.find(el => el.id === connector.to)
+    
+    if (!fromEl || !toEl) return null
+
+    const fromAnchors = getAnchorPoints(fromEl)
+    const toAnchors = getAnchorPoints(toEl)
+    
+    // Find closest anchor points
+    let minDist = Infinity
+    let bestFrom = fromAnchors[0]
+    let bestTo = toAnchors[0]
+    
+    fromAnchors.forEach(fromAnchor => {
+      toAnchors.forEach(toAnchor => {
+        const dist = Math.sqrt(
+          (fromAnchor.x - toAnchor.x) ** 2 + (fromAnchor.y - toAnchor.y) ** 2
+        )
+        if (dist < minDist) {
+          minDist = dist
+          bestFrom = fromAnchor
+          bestTo = toAnchor
+        }
+      })
+    })
+
+    if (connector.type === "straight") {
+      return {
+        path: `M ${bestFrom.x} ${bestFrom.y} L ${bestTo.x} ${bestTo.y}`,
+        endX: bestTo.x,
+        endY: bestTo.y,
+        angle: Math.atan2(bestTo.y - bestFrom.y, bestTo.x - bestFrom.x)
+      }
+    } else if (connector.type === "curved") {
+      const midX = (bestFrom.x + bestTo.x) / 2
+      const midY = (bestFrom.y + bestTo.y) / 2
+      const offset = 50
+      
+      return {
+        path: `M ${bestFrom.x} ${bestFrom.y} Q ${midX} ${midY - offset} ${bestTo.x} ${bestTo.y}`,
+        endX: bestTo.x,
+        endY: bestTo.y,
+        angle: Math.atan2(bestTo.y - midY, bestTo.x - midX)
+      }
+    }
+    
+    return null
+  }
+
+  // ===== MOUSE HANDLERS =====
+  
+  const handleCanvasMouseDown = (e) => {
+    if (e.target !== canvasRef.current && e.target.closest('.canvas-element')) return
+    
+    const rect = canvasRef.current.getBoundingClientRect()
+    const x = e.clientX - rect.left
+    const y = e.clientY - rect.top
+
+    // Check if clicking on a resize handle
+    if (selectedElement && selectedElement.size) {
+      const handle = getResizeHandle(selectedElement, x, y)
+      if (handle) {
+        setIsResizing(true)
+        setResizeHandle(handle)
+        setDragStart({ x, y })
+        setElementStart({
+          x: selectedElement.position.x,
+          y: selectedElement.position.y,
+          width: selectedElement.size.width,
+          height: selectedElement.size.height
+        })
+        return
+      }
+    }
+
+    // If clicking on canvas and text tool is active
+    if (activeTool === "text" && e.target === canvasRef.current) {
+      handleAddText(x, y)
+      return
+    }
+
+    setSelectedElement(null)
+  }
+
+  const handleElementMouseDown = (e, element) => {
+    e.stopPropagation()
+    
+    const rect = canvasRef.current.getBoundingClientRect()
+    const x = e.clientX - rect.left
+    const y = e.clientY - rect.top
+
+    if (connectorMode) {
+      handleConnectorClick(element)
+      return
+    }
+
+    // Check for resize handle
+    if (element.size) {
+      const handle = getResizeHandle(element, x, y)
+      if (handle) {
+        setSelectedElement(element)
+        setIsResizing(true)
+        setResizeHandle(handle)
+        setDragStart({ x, y })
+        setElementStart({
+          x: element.position.x,
+          y: element.position.y,
+          width: element.size.width,
+          height: element.size.height
+        })
+        return
+      }
+    }
+
+    // Start dragging
+    setSelectedElement(element)
+    setIsDragging(true)
+    setDragStart({ x, y })
+    setElementStart({ x: element.position.x, y: element.position.y })
+  }
+
+  const handleCanvasMouseMove = (e) => {
+    const rect = canvasRef.current.getBoundingClientRect()
+    const x = e.clientX - rect.left
+    const y = e.clientY - rect.top
+
+    if (connectorMode && connectorStart) {
+      setTempConnectorEnd({ x, y })
+    }
+
+    if (isResizing && selectedElement && resizeHandle) {
+      const deltaX = x - dragStart.x
+      const deltaY = y - dragStart.y
+      
+      const resizeResult = handleResize(
+        { ...selectedElement, position: elementStart, size: { width: elementStart.width, height: elementStart.height } },
+        resizeHandle,
+        deltaX,
+        deltaY
+      )
+
+      const updatedElement = {
+        ...selectedElement,
+        position: resizeResult.position,
+        size: resizeResult.size
+      }
+
+      setSelectedElement(updatedElement)
+      setElements(elements.map(el => el.id === selectedElement.id ? updatedElement : el))
+      
+    } else if (isDragging && selectedElement) {
+      const deltaX = x - dragStart.x
+      const deltaY = y - dragStart.y
+      
+      const newX = elementStart.x + deltaX
+      const newY = elementStart.y + deltaY
+      
+      const constrained = constrainToBounds(newX, newY, selectedElement.size.width, selectedElement.size.height)
+
+      const updatedElement = {
+        ...selectedElement,
+        position: constrained
+      }
+
+      setSelectedElement(updatedElement)
+      setElements(elements.map(el => el.id === selectedElement.id ? updatedElement : el))
+    }
+  }
+
+  const handleCanvasMouseUp = () => {
+    if ((isDragging || isResizing) && selectedElement) {
+      if (socket) {
+        socket.emit("element:update", { cardId, element: selectedElement })
+      }
+    }
+    
+    setIsDragging(false)
+    setIsResizing(false)
+    setResizeHandle(null)
+  }
+
+  const handleElementDoubleClick = (element) => {
+    if (element.type === "text") {
+      setEditingTextId(element.id)
+    } else if (element.type === "shape") {
+      const text = prompt("Enter text for shape:", element.text || "")
+      if (text !== null) {
+        const updatedElement = { ...element, text }
+        setElements(elements.map(el => el.id === element.id ? updatedElement : el))
+        if (socket) socket.emit("element:update", { cardId, element: updatedElement })
+      }
+    }
+  }
+
+  const handleDeleteElement = () => {
+    if (!selectedElement) return
+
+    setElements(elements.filter((el) => el.id !== selectedElement.id))
+    
+    // Also delete connectors attached to this element
+    const newConnectors = connectors.filter(
+      c => c.from !== selectedElement.id && c.to !== selectedElement.id
+    )
+    setConnectors(newConnectors)
+    
+    if (socket) {
+      socket.emit("element:delete", { cardId, elementId: selectedElement.id })
+    }
+    
+    setSelectedElement(null)
+  }
+
+  const handleDeleteConnector = (connectorId) => {
+    setConnectors(connectors.filter(c => c.id !== connectorId))
+    if (socket) socket.emit("connector:delete", { cardId, connectorId })
+  }
+
+  // ===== RENDER FUNCTIONS =====
+  
+  const renderResizeHandles = (element) => {
+    if (!selectedElement || selectedElement.id !== element.id) return null
+    if (editingTextId === element.id || !element.size) return null
+
+    const { position, size } = element
+    const handleSize = 10
+    
+    const handles = [
+      { pos: 'nw', x: position.x, y: position.y },
+      { pos: 'ne', x: position.x + size.width, y: position.y },
+      { pos: 'sw', x: position.x, y: position.y + size.height },
+      { pos: 'se', x: position.x + size.width, y: position.y + size.height },
+      { pos: 'n', x: position.x + size.width / 2, y: position.y },
+      { pos: 's', x: position.x + size.width / 2, y: position.y + size.height },
+      { pos: 'e', x: position.x + size.width, y: position.y + size.height / 2 },
+      { pos: 'w', x: position.x, y: position.y + size.height / 2 },
+    ]
+
+    return (
+      <g>
+        {handles.map(handle => (
+          <rect
+            key={handle.pos}
+            x={handle.x - handleSize / 2}
+            y={handle.y - handleSize / 2}
+            width={handleSize}
+            height={handleSize}
+            fill="#8b5cf6"
+            stroke="#fff"
+            strokeWidth="2"
+            className="cursor-pointer"
+            style={{ cursor: `${handle.pos}-resize` }}
+          />
+        ))}
+      </g>
+    )
+  }
+
+  const renderElement = (element) => {
+    const isSelected = selectedElement?.id === element.id
+
+    switch (element.type) {
+      case "text":
+        return (
+          <div
+            key={element.id}
+            className="canvas-element absolute"
+            onMouseDown={(e) => handleElementMouseDown(e, element)}
+            onDoubleClick={() => handleElementDoubleClick(element)}
+            style={{
+              left: element.position.x,
+              top: element.position.y,
+              width: element.size.width,
+              minHeight: element.size.height,
+              cursor: isDragging ? "grabbing" : "grab",
+              border: isSelected ? "2px solid #8b5cf6" : "2px solid transparent",
+              borderRadius: "4px",
+              padding: "8px",
+              backgroundColor: "rgba(30, 41, 59, 0.8)",
+              color: element.color,
+              fontSize: `${element.fontSize}px`,
+              fontWeight: element.bold ? "bold" : "normal",
+              fontStyle: element.italic ? "italic" : "normal",
+              textDecoration: element.underline ? "underline" : "none",
+              userSelect: editingTextId === element.id ? "text" : "none",
+              overflow: "hidden",
+              wordWrap: "break-word",
+            }}
+          >
+            {editingTextId === element.id ? (
+              <textarea
+                autoFocus
+                value={element.content}
+                onChange={(e) => updateTextElement(element.id, { content: e.target.value })}
+                onBlur={() => setEditingTextId(null)}
+                className="w-full h-full bg-transparent border-none outline-none resize-none"
+                style={{
+                  color: element.color,
+                  fontSize: `${element.fontSize}px`,
+                  fontWeight: element.bold ? "bold" : "normal",
+                  fontStyle: element.italic ? "italic" : "normal",
+                  textDecoration: element.underline ? "underline" : "none",
+                }}
+              />
+            ) : (
+              element.content
+            )}
+          </div>
+        )
+
+      case "shape":
+        return (
+          <div
+            key={element.id}
+            className="canvas-element absolute"
+            onMouseDown={(e) => handleElementMouseDown(e, element)}
+            onDoubleClick={() => handleElementDoubleClick(element)}
+            style={{
+              left: element.position.x,
+              top: element.position.y,
+              width: element.size.width,
+              height: element.size.height,
+              cursor: isDragging ? "grabbing" : "grab",
+              pointerEvents: "auto",
+            }}
+          >
+            <svg width={element.size.width} height={element.size.height} style={{ overflow: "visible" }}>
+              {element.shape === "rectangle" && (
+                <rect
+                  x="0"
+                  y="0"
+                  width={element.size.width}
+                  height={element.size.height}
+                  stroke={element.strokeColor}
+                  strokeWidth={element.strokeWidth}
+                  fill={element.fill}
+                  rx="8"
+                />
+              )}
+              {element.shape === "circle" && (
+                <ellipse
+                  cx={element.size.width / 2}
+                  cy={element.size.height / 2}
+                  rx={element.size.width / 2 - element.strokeWidth}
+                  ry={element.size.height / 2 - element.strokeWidth}
+                  stroke={element.strokeColor}
+                  strokeWidth={element.strokeWidth}
+                  fill={element.fill}
+                />
+              )}
+              {element.shape === "triangle" && (
+                <polygon
+                  points={`${element.size.width / 2},${element.strokeWidth} ${element.size.width - element.strokeWidth},${element.size.height - element.strokeWidth} ${element.strokeWidth},${element.size.height - element.strokeWidth}`}
+                  stroke={element.strokeColor}
+                  strokeWidth={element.strokeWidth}
+                  fill={element.fill}
+                />
+              )}
+              {element.shape === "diamond" && (
+                <polygon
+                  points={`${element.size.width / 2},${element.strokeWidth} ${element.size.width - element.strokeWidth},${element.size.height / 2} ${element.size.width / 2},${element.size.height - element.strokeWidth} ${element.strokeWidth},${element.size.height / 2}`}
+                  stroke={element.strokeColor}
+                  strokeWidth={element.strokeWidth}
+                  fill={element.fill}
+                />
+              )}
+              {isSelected && (
+                <rect
+                  x="-2"
+                  y="-2"
+                  width={element.size.width + 4}
+                  height={element.size.height + 4}
+                  stroke="#8b5cf6"
+                  strokeWidth="2"
+                  fill="none"
+                  strokeDasharray="5,5"
+                />
+              )}
+            </svg>
+            {element.text && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: "50%",
+                  left: "50%",
+                  transform: "translate(-50%, -50%)",
+                  color: "#ffffff",
+                  fontSize: Math.min(14, element.size.width / 10) + "px",
+                  fontWeight: "600",
+                  pointerEvents: "none",
+                  textAlign: "center",
+                  maxWidth: element.size.width - 20,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {element.text}
+              </div>
+            )}
+          </div>
+        )
+
+      case "image":
+        return (
+          <div
+            key={element.id}
+            className="canvas-element absolute"
+            onMouseDown={(e) => handleElementMouseDown(e, element)}
+            style={{
+              left: element.position.x,
+              top: element.position.y,
+              width: element.size.width,
+              height: element.size.height,
+              cursor: isDragging ? "grabbing" : "grab",
+              border: isSelected ? "3px solid #8b5cf6" : "none",
+              borderRadius: "8px",
+              overflow: "hidden",
+            }}
+          >
+            <img
+              src={element.url}
+              alt="Workspace element"
+              style={{
+                width: "100%",
+                height: "100%",
+                objectFit: "contain",
+                pointerEvents: "none",
+              }}
+            />
+          </div>
+        )
+
+      default:
+        return null
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-black flex items-center justify-center">
+        <div className="w-16 h-16 border-4 border-purple-500/20 border-t-purple-500 rounded-full animate-spin"></div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-black">
+      {/* Header */}
+      <div className="sticky top-0 z-40 bg-slate-900/80 backdrop-blur-xl border-b border-slate-700/50">
+        <div className="px-6 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <button
+              onClick={() => navigate(`/board/${boardId}`)}
+              className="p-2 text-slate-400 hover:text-white hover:bg-slate-700 rounded-xl transition-all"
+            >
+              <ArrowLeft className="w-5 h-5" />
+            </button>
+            <div>
+              <h1 className="text-2xl font-bold bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent">
+                {card?.title}
+              </h1>
+              <p className="text-sm text-slate-400 mt-1">{card?.description || "No description"}</p>
+            </div>
+          </div>
+
+          <button
+            onClick={saveWorkspace}
+            className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white rounded-xl font-semibold transition-all"
+          >
+            <Save className="w-4 h-4" />
+            Save Workspace
+          </button>
+        </div>
+      </div>
+
+      <div className="flex h-[calc(100vh-80px)]">
+        {/* Tools Sidebar */}
+        <div className="w-20 bg-slate-900/50 border-r border-slate-700/50 flex flex-col items-center py-6 gap-4">
+          <button
+            onClick={() => {
+              setActiveTool(activeTool === "text" ? null : "text")
+              setConnectorMode(false)
+            }}
+            className={`p-4 rounded-xl transition-all ${
+              activeTool === "text"
+                ? "bg-gradient-to-br from-purple-500 to-pink-500 text-white"
+                : "text-slate-400 hover:text-white hover:bg-slate-700"
+            }`}
+            title="Text Tool"
+          >
+            <Type className="w-6 h-6" />
+          </button>
+
+          <button
+            onClick={() => {
+              setActiveTool(activeTool === "shape" ? null : "shape")
+              setConnectorMode(false)
+            }}
+            className={`p-4 rounded-xl transition-all ${
+              activeTool === "shape"
+                ? "bg-gradient-to-br from-purple-500 to-pink-500 text-white"
+                : "text-slate-400 hover:text-white hover:bg-slate-700"
+            }`}
+            title="Shape Tool"
+          >
+            <Shapes className="w-6 h-6" />
+          </button>
+
+          <button
+            onClick={() => {
+              setActiveTool(activeTool === "image" ? null : "image")
+              setConnectorMode(false)
+            }}
+            className={`p-4 rounded-xl transition-all ${
+              activeTool === "image"
+                ? "bg-gradient-to-br from-purple-500 to-pink-500 text-white"
+                : "text-slate-400 hover:text-white hover:bg-slate-700"
+            }`}
+            title="Image Tool"
+          >
+            <ImageIcon className="w-6 h-6" />
+          </button>
+
+          <button
+            onClick={() => {
+              setConnectorMode(!connectorMode)
+              setActiveTool("connect")
+              setConnectorStart(null)
+            }}
+            className={`p-4 rounded-xl transition-all ${
+              connectorMode
+                ? "bg-gradient-to-br from-purple-500 to-pink-500 text-white"
+                : "text-slate-400 hover:text-white hover:bg-slate-700"
+            }`}
+            title="Connect Tool"
+          >
+            <Link2 className="w-6 h-6" />
+          </button>
+
+          {selectedElement && (
+            <button
+              onClick={handleDeleteElement}
+              className="mt-auto p-4 rounded-xl bg-red-500/20 text-red-400 hover:bg-red-500 hover:text-white transition-all"
+              title="Delete Selected"
+            >
+              <Trash2 className="w-6 h-6" />
+            </button>
+          )}
+        </div>
+
+        {/* Tool Panels */}
+        {activeTool && (
+          <div className="w-80 bg-slate-900/50 border-r border-slate-700/50 p-6 overflow-y-auto">
+            {activeTool === "text" && (
+              <div className="space-y-4">
+                <h3 className="text-lg font-bold text-white">Text Tool</h3>
+                <p className="text-sm text-slate-400">
+                  Click on the canvas to add text. Double-click text to edit.
+                </p>
+                
+                {selectedElement?.type === "text" && (
+                  <div className="space-y-4 pt-4 border-t border-slate-700">
+                    <h4 className="text-md font-semibold text-white">Format Text</h4>
+                    
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => handleTextFormatChange("bold")}
+                        className={`flex-1 p-3 rounded-xl border-2 transition-all ${
+                          selectedElement.bold
+                            ? "border-purple-500 bg-purple-500/20 text-white"
+                            : "border-slate-700 text-slate-400 hover:border-slate-600"
+                        }`}
+                      >
+                        <Bold className="w-5 h-5 mx-auto" />
+                      </button>
+                      <button
+                        onClick={() => handleTextFormatChange("italic")}
+                        className={`flex-1 p-3 rounded-xl border-2 transition-all ${
+                          selectedElement.italic
+                            ? "border-purple-500 bg-purple-500/20 text-white"
+                            : "border-slate-700 text-slate-400 hover:border-slate-600"
+                        }`}
+                      >
+                        <Italic className="w-5 h-5 mx-auto" />
+                      </button>
+                      <button
+                        onClick={() => handleTextFormatChange("underline")}
+                        className={`flex-1 p-3 rounded-xl border-2 transition-all ${
+                          selectedElement.underline
+                            ? "border-purple-500 bg-purple-500/20 text-white"
+                            : "border-slate-700 text-slate-400 hover:border-slate-600"
+                        }`}
+                      >
+                        <Underline className="w-5 h-5 mx-auto" />
+                      </button>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-sm text-slate-400">Font Size: {selectedElement.fontSize}px</label>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => handleFontSizeChange(-2)}
+                          className="flex-1 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-xl transition-all"
+                        >
+                          -
+                        </button>
+                        <button
+                          onClick={() => handleFontSizeChange(2)}
+                          className="flex-1 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-xl transition-all"
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {activeTool === "shape" && (
+              <div className="space-y-4">
+                <h3 className="text-lg font-bold text-white">Add Shape</h3>
+                <div className="grid grid-cols-2 gap-3">
+                  {["rectangle", "circle", "triangle", "diamond"].map((shape) => (
+                    <button
+                      key={shape}
+                      onClick={() => setSelectedShape(shape)}
+                      className={`p-4 rounded-xl border-2 transition-all ${
+                        selectedShape === shape
+                          ? "border-purple-500 bg-purple-500/20"
+                          : "border-slate-700 hover:border-slate-600"
+                      }`}
+                    >
+                      <span className="text-white capitalize">{shape}</span>
+                    </button>
+                  ))}
+                </div>
+                <button
+                  onClick={handleAddShape}
+                  className="w-full px-4 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-xl font-semibold"
+                >
+                  Add Shape
+                </button>
+              </div>
+            )}
+
+            {activeTool === "image" && (
+              <div className="space-y-4">
+                <h3 className="text-lg font-bold text-white">Add Image</h3>
+                
+                <div className="space-y-2">
+                  <label className="text-sm text-slate-400">Image URL</label>
+                  <input
+                    type="url"
+                    value={imageUrl}
+                    onChange={(e) => setImageUrl(e.target.value)}
+                    className="w-full px-4 py-3 bg-slate-800 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:border-purple-500"
+                    placeholder="https://example.com/image.jpg"
+                  />
+                  <button
+                    onClick={handleAddImage}
+                    disabled={!imageUrl.trim()}
+                    className="w-full px-4 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-xl font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Add from URL
+                  </button>
+                </div>
+
+                <div className="relative">
+                  <div className="absolute inset-0 flex items-center">
+                    <div className="w-full border-t border-slate-700"></div>
+                  </div>
+                  <div className="relative flex justify-center text-sm">
+                    <span className="px-2 bg-slate-900/50 text-slate-400">OR</span>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm text-slate-400">Upload Image</label>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={handleImageUpload}
+                    className="hidden"
+                  />
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="w-full px-4 py-3 border-2 border-slate-700 hover:border-purple-500 text-white rounded-xl font-semibold transition-all flex items-center justify-center gap-2"
+                  >
+                    <Upload className="w-5 h-5" />
+                    Upload from Device
+                  </button>
+                  <p className="text-xs text-slate-500">Images are stored in browser storage</p>
+                </div>
+              </div>
+            )}
+
+            {activeTool === "connect" && (
+              <div className="space-y-4">
+                <h3 className="text-lg font-bold text-white">Connect Elements</h3>
+                <p className="text-sm text-slate-400">
+                  Click on two elements to connect them with a line.
+                </p>
+                
+                {connectorStart && (
+                  <div className="px-4 py-3 bg-purple-500/20 border border-purple-500/50 rounded-xl text-purple-300 text-sm">
+                    First element selected. Click another element to connect.
+                  </div>
+                )}
+
+                <div className="space-y-3 pt-4 border-t border-slate-700">
+                  <h4 className="text-md font-semibold text-white">Connector Style</h4>
+                  
+                  <div className="space-y-2">
+                    <label className="text-sm text-slate-400">Type</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        onClick={() => setSelectedConnectorStyle({ ...selectedConnectorStyle, type: "straight" })}
+                        className={`px-4 py-2 rounded-xl border-2 transition-all ${
+                          selectedConnectorStyle.type === "straight"
+                            ? "border-purple-500 bg-purple-500/20 text-white"
+                            : "border-slate-700 text-slate-400 hover:border-slate-600"
+                        }`}
+                      >
+                        Straight
+                      </button>
+                      <button
+                        onClick={() => setSelectedConnectorStyle({ ...selectedConnectorStyle, type: "curved" })}
+                        className={`px-4 py-2 rounded-xl border-2 transition-all ${
+                          selectedConnectorStyle.type === "curved"
+                            ? "border-purple-500 bg-purple-500/20 text-white"
+                            : "border-slate-700 text-slate-400 hover:border-slate-600"
+                        }`}
+                      >
+                        Curved
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-sm text-slate-400">Color</label>
+                    <input
+                      type="color"
+                      value={selectedConnectorStyle.color}
+                      onChange={(e) => setSelectedConnectorStyle({ ...selectedConnectorStyle, color: e.target.value })}
+                      className="w-full h-10 rounded-xl cursor-pointer"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-sm text-slate-400">Width: {selectedConnectorStyle.width}px</label>
+                    <input
+                      type="range"
+                      min="1"
+                      max="8"
+                      value={selectedConnectorStyle.width}
+                      onChange={(e) => setSelectedConnectorStyle({ ...selectedConnectorStyle, width: parseInt(e.target.value) })}
+                      className="w-full"
+                    />
+                  </div>
+                </div>
+
+                {connectors.length > 0 && (
+                  <div className="space-y-2 pt-4 border-t border-slate-700">
+                    <h4 className="text-md font-semibold text-white">Connections ({connectors.length})</h4>
+                    <div className="space-y-2 max-h-40 overflow-y-auto">
+                      {connectors.map((connector, idx) => (
+                        <div
+                          key={connector.id}
+                          className="flex items-center justify-between px-3 py-2 bg-slate-800 rounded-lg"
+                        >
+                          <span className="text-sm text-slate-300">Connection {idx + 1}</span>
+                          <button
+                            onClick={() => handleDeleteConnector(connector.id)}
+                            className="p-1 text-red-400 hover:text-red-300 transition-colors"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Canvas */}
+        <div className="flex-1 p-8 overflow-auto">
+          <div
+            ref={canvasRef}
+            className="relative bg-slate-800/30 rounded-3xl border-2 border-slate-700/50"
+            style={{
+              width: CANVAS_WIDTH,
+              height: CANVAS_HEIGHT,
+              cursor: activeTool === "text" ? "crosshair" : "default",
+            }}
+            onMouseDown={handleCanvasMouseDown}
+            onMouseMove={handleCanvasMouseMove}
+            onMouseUp={handleCanvasMouseUp}
+            onMouseLeave={handleCanvasMouseUp}
+          >
+            {/* SVG Layer for connectors and resize handles */}
+            <svg 
+              className="absolute inset-0 w-full h-full pointer-events-none" 
+              style={{ zIndex: 1 }}
+            >
+              {/* Render connectors */}
+              {connectors.map((connector) => {
+                const pathData = getConnectorPath(connector)
+                if (!pathData) return null
+
+                return (
+                  <g key={connector.id}>
+                    <path
+                      d={pathData.path}
+                      stroke={connector.color}
+                      strokeWidth={connector.width}
+                      fill="none"
+                      strokeLinecap="round"
+                    />
+                    {/* Arrow head */}
+                    <polygon
+                      points={`${pathData.endX},${pathData.endY} ${pathData.endX - 10 * Math.cos(pathData.angle - Math.PI / 6)},${pathData.endY - 10 * Math.sin(pathData.angle - Math.PI / 6)} ${pathData.endX - 10 * Math.cos(pathData.angle + Math.PI / 6)},${pathData.endY - 10 * Math.sin(pathData.angle + Math.PI / 6)}`}
+                      fill={connector.color}
+                    />
+                  </g>
+                )
+              })}
+
+              {/* Temporary connector line while dragging */}
+              {connectorMode && connectorStart && tempConnectorEnd && (
+                <g>
+                  <line
+                    x1={connectorStart.element.position.x + connectorStart.element.size.width / 2}
+                    y1={connectorStart.element.position.y + connectorStart.element.size.height / 2}
+                    x2={tempConnectorEnd.x}
+                    y2={tempConnectorEnd.y}
+                    stroke={selectedConnectorStyle.color}
+                    strokeWidth={selectedConnectorStyle.width}
+                    strokeDasharray="5,5"
+                  />
+                </g>
+              )}
+
+              {/* Render resize handles */}
+              {elements.map(element => renderResizeHandles(element))}
+            </svg>
+
+            {/* Render elements */}
+            <div className="relative w-full h-full" style={{ zIndex: 2 }}>
+              {elements.map((element) => renderElement(element))}
+            </div>
+
+            {elements.length === 0 && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <div className="text-center">
+                  <div className="text-6xl mb-4">🎨</div>
+                  <h3 className="text-xl font-bold text-slate-400 mb-2">Empty Canvas</h3>
+                  <p className="text-slate-500">Use the tools on the left to start creating!</p>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
