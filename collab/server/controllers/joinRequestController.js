@@ -179,6 +179,19 @@ export const acceptJoinRequest = async (req, res) => {
       message: acceptMessage
     })
 
+    // Update original join request message status
+    await Message.updateOne(
+      { 'metadata.joinRequestId': requestId },
+      { $set: { status: 'accepted' } }
+    )
+
+    // Emit socket event for message update
+    io.to(`user-${userId}`).emit("message:updated", {
+      messageId: requestId,
+      status: 'accepted',
+      type: 'join_request'
+    })
+
     // Send email notification
     await sendRequestAcceptedEmail({
       recipientEmail: joinRequest.requester.email,
@@ -186,7 +199,7 @@ export const acceptJoinRequest = async (req, res) => {
       acceptedBy: "Board Admin"
     })
 
-    res.json({ message: "Join request accepted", joinRequest })
+    res.status(200).json({ message: "Join request accepted", joinRequest })
   } catch (error) {
     console.error("Accept join request error:", error)
     res.status(500).json({ message: "Failed to accept request", error: error.message })
@@ -238,6 +251,19 @@ export const rejectJoinRequest = async (req, res) => {
 
     await rejectMessage.save()
 
+    // Update original join request message status
+    await Message.updateOne(
+      { 'metadata.joinRequestId': requestId },
+      { $set: { status: 'rejected' } }
+    )
+
+    // Emit socket event for message update
+    io.to(`user-${userId}`).emit("message:updated", {
+      messageId: requestId,
+      status: 'rejected',
+      type: 'join_request'
+    })
+
     // Send email notification
     await sendRequestRejectedEmail({
       recipientEmail: joinRequest.requester.email,
@@ -246,7 +272,7 @@ export const rejectJoinRequest = async (req, res) => {
       reason: reason || "No reason provided"
     })
 
-    res.json({ message: "Join request rejected", joinRequest })
+    res.status(200).json({ message: "Join request rejected", joinRequest })
   } catch (error) {
     console.error("Reject join request error:", error)
     res.status(500).json({ message: "Failed to reject request", error: error.message })

@@ -195,6 +195,19 @@ export const acceptCollaborationRequest = async (req, res) => {
       }
     })
 
+    // Update original collaboration request message status
+    await Message.updateOne(
+      { 'metadata.collaborationRequestId': requestId },
+      { $set: { status: 'accepted' } }
+    )
+
+    // Emit socket event for message update
+    io.to(`user-${userId}`).emit("message:updated", {
+      messageId: requestId,
+      status: 'accepted',
+      type: 'collaboration_request'
+    })
+
     // Notify user's dashboard about new board
     io.to(`user-${collaborationRequest.requester._id}`).emit("board:joined", {
       board: { _id: board._id, name: board.title, description: board.description }
@@ -227,7 +240,7 @@ export const acceptCollaborationRequest = async (req, res) => {
       acceptedBy: collaborationRequest.boardOwner.name,
     })
 
-    res.json({ message: "Collaboration request accepted", collaborationRequest })
+    res.status(200).json({ message: "Collaboration request accepted", collaborationRequest })
   } catch (error) {
     console.error("Accept collaboration request error:", error)
     res.status(500).json({ message: "Failed to accept request", error: error.message })
@@ -280,6 +293,19 @@ export const rejectCollaborationRequest = async (req, res) => {
 
     await rejectMessage.save()
 
+    // Update original collaboration request message status
+    await Message.updateOne(
+      { 'metadata.collaborationRequestId': requestId },
+      { $set: { status: 'rejected' } }
+    )
+
+    // Emit socket event for message update
+    io.to(`user-${userId}`).emit("message:updated", {
+      messageId: requestId,
+      status: 'rejected',
+      type: 'collaboration_request'
+    })
+
     // Send email notification
     await sendRequestRejectedEmail({
       recipientEmail: collaborationRequest.requester.email,
@@ -288,7 +314,7 @@ export const rejectCollaborationRequest = async (req, res) => {
       reason: reason || "No reason provided",
     })
 
-    res.json({ message: "Collaboration request rejected", collaborationRequest })
+    res.status(200).json({ message: "Collaboration request rejected", collaborationRequest })
   } catch (error) {
     console.error("Reject collaboration request error:", error)
     res.status(500).json({ message: "Failed to reject request", error: error.message })

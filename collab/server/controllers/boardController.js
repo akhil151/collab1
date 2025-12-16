@@ -177,14 +177,16 @@ export const removeMember = async (req, res) => {
         removedBy: board.owner.name,
         reason: reason || "No reason provided",
       })
+      
+      // Emit socket events
+      io.to(`user-${memberId}`).emit("board:removed", { boardId, userId: memberId })
+      io.to(`user-${memberId}`).emit("message:received", { message: messageNotification })
     }
-
-    // Emit socket events
-    io.to(`user-${memberId}`).emit("board:removed", { boardId, userId: memberId })
+    
+    // Emit to board room
     io.to(`board-${boardId}`).emit("participant:removed", { userId: memberId })
-    io.to(`user-${memberId}`).emit("message:received", { message: messageNotification })
 
-    res.json({ message: "Member removed successfully" })
+    res.status(200).json({ message: "Member removed successfully" })
   } catch (error) {
     console.error("Remove member error:", error)
     res.status(500).json({ message: "Failed to remove member", error: error.message })

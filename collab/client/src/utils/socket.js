@@ -3,6 +3,8 @@ import io from "socket.io-client"
 let socket = null
 let connectionAttempts = 0
 const MAX_CONNECTION_ATTEMPTS = 5
+let eventQueue = []
+let isProcessingQueue = false
 
 export const connectSocket = (url = "http://localhost:5000") => {
   if (!socket || !socket.connected) {
@@ -23,6 +25,7 @@ export const connectSocket = (url = "http://localhost:5000") => {
       socket.on('connect', () => {
         console.log('Socket connected successfully')
         connectionAttempts = 0
+        processEventQueue()
       })
 
       socket.on('connect_error', (error) => {
@@ -41,6 +44,23 @@ export const connectSocket = (url = "http://localhost:5000") => {
     }
   }
   return socket
+}
+
+const processEventQueue = () => {
+  if (isProcessingQueue || !socket || !socket.connected) return
+  
+  isProcessingQueue = true
+  
+  while (eventQueue.length > 0 && socket && socket.connected) {
+    const { eventName, args } = eventQueue.shift()
+    try {
+      socket.emit(eventName, ...args)
+    } catch (error) {
+      console.error(`Error emitting queued event ${eventName}:`, error)
+    }
+  }
+  
+  isProcessingQueue = false
 }
 
 export const getSocket = () => socket
@@ -65,7 +85,17 @@ export const emitEvent = (eventName, ...args) => {
       console.error(`Error emitting event ${eventName}:`, error)
     }
   } else {
-    console.warn(`Cannot emit ${eventName}: socket not connected`)
+    // Queue event for when socket connects
+    eventQueue.push({ eventName, args })
+    
+    // Try to process queue if socket exists but not connected yet
+    if (socket && !isProcessingQueue) {
+      setTimeout(() => {
+        if (socket && socket.connected) {
+          processEventQueue()
+        }
+      }, 100)
+    }
   }
 }
 

@@ -55,6 +55,11 @@ const messageSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    status: {
+      type: String,
+      enum: ["pending", "accepted", "rejected"],
+      default: "pending",
+    },
     createdAt: {
       type: Date,
       default: Date.now,

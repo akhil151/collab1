@@ -126,6 +126,15 @@ export default function Dashboard() {
               <div className="flex items-center gap-3 mb-4">
                 <Sparkles className="w-6 h-6" />
                 <span className="text-sm font-semibold">Welcome Back!</span>
+                {user && user.role && (
+                  <span className={`px-3 py-1 rounded-full text-xs font-bold ${
+                    user.role === 'ADMIN' 
+                      ? 'bg-yellow-400 text-yellow-900' 
+                      : 'bg-blue-400 text-blue-900'
+                  }`}>
+                    {user.role}
+                  </span>
+                )}
               </div>
               <h1 className="text-5xl font-bold mb-3">
                 Hi, <span className="text-white/90">{user?.name}</span>

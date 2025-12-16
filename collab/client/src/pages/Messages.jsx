@@ -36,6 +36,19 @@ export default function Messages() {
       fetchMessages()
       fetchUnreadCount()
     })
+    
+    // Listen for message updates (status changes)
+    onEvent("message:updated", (data) => {
+      console.log("Message updated:", data)
+      // Remove the message from list or update its status
+      setMessages(prevMessages => 
+        prevMessages.filter(msg => 
+          msg.metadata?.invitationId !== data.messageId &&
+          msg.metadata?.joinRequestId !== data.messageId &&
+          msg.metadata?.collaborationRequestId !== data.messageId
+        )
+      )
+    })
   }, [user])
 
   const fetchMessages = async () => {
@@ -129,15 +142,16 @@ export default function Messages() {
   const acceptInvitation = async (messageId, invitationId) => {
     try {
       const token = localStorage.getItem("token")
-      await axios.put(
+      const response = await axios.put(
         `${import.meta.env.VITE_API_URL}/api/invitations/${invitationId}/accept`,
         {},
         { headers: { Authorization: `Bearer ${token}` } }
       )
       
+      // Immediately remove message from UI
+      setMessages(prevMessages => prevMessages.filter(msg => msg._id !== messageId))
+      
       alert("Invitation accepted! You can now access the board.")
-      markAsRead(messageId)
-      fetchMessages()
     } catch (error) {
       console.error("Failed to accept invitation:", error)
       alert(error.response?.data?.message || "Failed to accept invitation")
@@ -146,16 +160,16 @@ export default function Messages() {
 
   const rejectInvitation = async (messageId, invitationId) => {
     try {
-      const token = localStorage.getItem("token")
-      await axios.put(
+      const response = await axios.put(
         `${import.meta.env.VITE_API_URL}/api/invitations/${invitationId}/reject`,
         {},
         { headers: { Authorization: `Bearer ${token}` } }
       )
       
+      // Immediately remove message from UI
+      setMessages(prevMessages => prevMessages.filter(msg => msg._id !== messageId))
+      
       alert("Invitation rejected")
-      markAsRead(messageId)
-      fetchMessages()
     } catch (error) {
       console.error("Failed to reject invitation:", error)
       alert(error.response?.data?.message || "Failed to reject invitation")
@@ -164,16 +178,16 @@ export default function Messages() {
 
   const acceptCollaborationRequest = async (messageId, requestId) => {
     try {
-      const token = localStorage.getItem("token")
-      await axios.put(
+      const response = await axios.put(
         `${import.meta.env.VITE_API_URL}/api/collaboration-requests/${requestId}/accept`,
         {},
         { headers: { Authorization: `Bearer ${token}` } }
       )
       
+      // Immediately remove message from UI
+      setMessages(prevMessages => prevMessages.filter(msg => msg._id !== messageId))
+      
       alert("Collaboration request accepted!")
-      markAsRead(messageId)
-      fetchMessages()
     } catch (error) {
       console.error("Failed to accept collaboration request:", error)
       alert(error.response?.data?.message || "Failed to accept request")
@@ -184,16 +198,16 @@ export default function Messages() {
     const reason = prompt("Reason for rejection (optional):")
     
     try {
-      const token = localStorage.getItem("token")
-      await axios.put(
+      const response = await axios.put(
         `${import.meta.env.VITE_API_URL}/api/collaboration-requests/${requestId}/reject`,
         { reason },
         { headers: { Authorization: `Bearer ${token}` } }
       )
       
+      // Immediately remove message from UI
+      setMessages(prevMessages => prevMessages.filter(msg => msg._id !== messageId))
+      
       alert("Collaboration request rejected")
-      markAsRead(messageId)
-      fetchMessages()
     } catch (error) {
       console.error("Failed to reject collaboration request:", error)
       alert(error.response?.data?.message || "Failed to reject request")
@@ -203,15 +217,16 @@ export default function Messages() {
   const acceptJoinRequest = async (messageId, requestId) => {
     try {
       const token = localStorage.getItem("token")
-      await axios.put(
+      const response = await axios.put(
         `${import.meta.env.VITE_API_URL}/api/join-requests/${requestId}/accept`,
         {},
         { headers: { Authorization: `Bearer ${token}` } }
       )
       
+      // Immediately remove message from UI
+      setMessages(prevMessages => prevMessages.filter(msg => msg._id !== messageId))
+      
       alert("Join request accepted!")
-      markAsRead(messageId)
-      fetchMessages()
     } catch (error) {
       console.error("Failed to accept join request:", error)
       alert(error.response?.data?.message || "Failed to accept request")
@@ -223,15 +238,16 @@ export default function Messages() {
     
     try {
       const token = localStorage.getItem("token")
-      await axios.put(
+      const response = await axios.put(
         `${import.meta.env.VITE_API_URL}/api/join-requests/${requestId}/reject`,
         { reason },
         { headers: { Authorization: `Bearer ${token}` } }
       )
       
+      // Immediately remove message from UI
+      setMessages(prevMessages => prevMessages.filter(msg => msg._id !== messageId))
+      
       alert("Join request rejected")
-      markAsRead(messageId)
-      fetchMessages()
     } catch (error) {
       console.error("Failed to reject join request:", error)
       alert(error.response?.data?.message || "Failed to reject request")

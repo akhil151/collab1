@@ -131,7 +131,11 @@ export default function ParticipantsPanel({ isOpen, onClose, boardId }) {
     }
   }
 
-  const isAdmin = board && board.owner && board.owner._id === user?._id
+  const isAdmin = board && board.owner && user && (
+    (typeof board.owner === 'string' && board.owner === user.id) ||
+    (board.owner._id && board.owner._id.toString() === user.id) ||
+    (board.owner.id && board.owner.id === user.id)
+  )
 
   const sendInvitation = async (e) => {
     e.preventDefault()

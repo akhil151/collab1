@@ -193,6 +193,19 @@ export const acceptInvitation = async (req, res) => {
       message: acceptMessage
     })
 
+    // Update original invitation message status
+    await Message.updateOne(
+      { 'metadata.invitationId': invitationId },
+      { $set: { status: 'accepted' } }
+    )
+
+    // Emit socket event for message update
+    io.to(`user-${userId}`).emit("message:updated", {
+      messageId: invitationId,
+      status: 'accepted',
+      type: 'invitation'
+    })
+
     // Send email notification
     const acceptedBy = await User.findById(userId)
     const sender = await User.findById(invitation.sender._id)
@@ -246,6 +259,19 @@ export const rejectInvitation = async (req, res) => {
 
     await rejectMessage.save()
 
+    // Update original invitation message status
+    await Message.updateOne(
+      { 'metadata.invitationId': invitationId },
+      { $set: { status: 'rejected' } }
+    )
+
+    // Emit socket event for message update
+    io.to(`user-${userId}`).emit("message:updated", {
+      messageId: invitationId,
+      status: 'rejected',
+      type: 'invitation'
+    })
+
     // Send email notification
     const rejectedBy = await User.findById(userId)
     const sender = await User.findById(invitation.sender._id)
@@ -256,7 +282,7 @@ export const rejectInvitation = async (req, res) => {
       reason: ""
     })
 
-    res.json({ message: "Invitation rejected" })
+    res.status(200).json({ message: "Invitation rejected" })
   } catch (error) {
     console.error("Reject invitation error:", error)
     res.status(500).json({ message: "Failed to reject invitation", error: error.message })
