@@ -27,7 +27,7 @@ export default function ParticipantsPanel({ isOpen, onClose, boardId }) {
       
       // Connect to socket for real-time updates
       try {
-        const socket = connectSocket(import.meta.env.VITE_API_URL || "http://localhost:5000")
+        const socket = connectSocket(import.meta.env.VITE_API_URL)
         if (user && user.id) {
           emitEvent("join-board", boardId, user.id)
         }

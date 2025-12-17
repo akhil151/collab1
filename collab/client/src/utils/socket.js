@@ -6,7 +6,24 @@ const MAX_CONNECTION_ATTEMPTS = 5
 let eventQueue = []
 let isProcessingQueue = false
 
-export const connectSocket = (url = "http://localhost:5000") => {
+// Get API URL from environment - no localhost fallback in production
+const getApiUrl = () => {
+  const apiUrl = import.meta.env.VITE_API_URL
+  if (!apiUrl && import.meta.env.MODE === 'production') {
+    console.error('VITE_API_URL is not defined in production')
+    return null
+  }
+  return apiUrl || "http://localhost:5000"
+}
+
+export const connectSocket = (url) => {
+  // Use provided URL or get from environment
+  const socketUrl = url || getApiUrl()
+  
+  if (!socketUrl) {
+    console.error('No socket URL available')
+    return null
+  }
   if (!socket || !socket.connected) {
     try {
       if (connectionAttempts >= MAX_CONNECTION_ATTEMPTS) {
@@ -14,12 +31,14 @@ export const connectSocket = (url = "http://localhost:5000") => {
         return null
       }
 
-      socket = io(url, {
+      socket = io(socketUrl, {
         reconnection: true,
         reconnectionDelay: 1000,
         reconnectionDelayMax: 5000,
         reconnectionAttempts: 5,
         transports: ['websocket', 'polling'],
+        withCredentials: false,
+        autoConnect: true,
       })
 
       socket.on('connect', () => {

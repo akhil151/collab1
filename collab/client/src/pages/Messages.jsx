@@ -27,7 +27,7 @@ export default function Messages() {
     fetchUnreadCount()
     
     // Connect to socket for real-time message updates
-    const socket = connectSocket(import.meta.env.VITE_API_URL || "http://localhost:5000")
+    const socket = connectSocket(import.meta.env.VITE_API_URL)
     emitEvent("join-user", user._id)
     
     // Listen for new messages

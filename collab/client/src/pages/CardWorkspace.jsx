@@ -94,7 +94,7 @@ export default function CardWorkspace() {
   }, [cardId, user])
 
   const setupSocket = () => {
-    const socketUrl = import.meta.env.VITE_SOCKET_URL || "http://localhost:5000"
+    const socketUrl = import.meta.env.VITE_API_URL
     const newSocket = io(socketUrl, {
       reconnection: true,
       reconnectionDelay: 1000,

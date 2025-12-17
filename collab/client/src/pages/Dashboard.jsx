@@ -36,7 +36,7 @@ export default function Dashboard() {
     
     // Connect to socket and listen for board updates
     try {
-      const socket = connectSocket(import.meta.env.VITE_API_URL || "http://localhost:5000")
+      const socket = connectSocket(import.meta.env.VITE_API_URL)
       
       if (user && user.id) {
         emitEvent("join-user", user.id)

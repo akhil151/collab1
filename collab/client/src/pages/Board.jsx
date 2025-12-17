@@ -34,7 +34,7 @@ export default function Board() {
 
   const setupSocket = () => {
     try {
-      const socketUrl = import.meta.env.VITE_API_URL || "http://localhost:5000"
+      const socketUrl = import.meta.env.VITE_API_URL
       const newSocket = io(socketUrl, {
         reconnection: true,
         reconnectionDelay: 1000,
